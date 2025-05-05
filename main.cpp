@@ -4,8 +4,12 @@
 #include <queue>
 #include <climits>
 #include <iomanip>
+#include <omp.h>
+#include <limits>
 
 using namespace std;
+
+const double INF = numeric_limits<double>::infinity();
 
 struct Edge {
     int u, v;
@@ -17,28 +21,25 @@ struct CombinedEdge {
     int u, v;
     double weight;
     vector<double> original_weights;
-    CombinedEdge(int _u, int _v, double _w, const vector<double>& _ow) 
-        : u(_u), v(_v), weight(_w), original_weights(_ow) {}
+    CombinedEdge(int _u, int _v, double _w, const vector<double>& _ow)
+      : u(_u), v(_v), weight(_w), original_weights(_ow) {}
 };
 
-void dijkstra(const vector<vector<pair<int, double>>>& graph, int source, 
+void dijkstra(const vector<vector<pair<int, double>>>& graph, int source,
               vector<int>& parent, vector<double>& distances, int num_vertices) {
-    priority_queue<pair<double, int>, vector<pair<double, int>>, greater<>> pq;
-    distances.assign(num_vertices, INT_MAX);
+    priority_queue<pair<double,int>, vector<pair<double,int>>, greater<>> pq;
+    distances.assign(num_vertices, INF);
     parent.assign(num_vertices, -1);
     distances[source] = 0;
     pq.push({0, source});
-    
     while (!pq.empty()) {
-        double dist = pq.top().first;
-        int u = pq.top().second;
-        pq.pop();
-        
+        auto [dist,u] = pq.top(); pq.pop();
         if (dist > distances[u]) continue;
-        
-        for (const auto& [v, weight] : graph[u]) {
-            if (distances[u] + weight < distances[v]) {
-                distances[v] = distances[u] + weight;
+        for (auto &e : graph[u]) {
+            int v = e.first; double w = e.second;
+            if (w == INF) continue;
+            if (distances[u] + w < distances[v]) {
+                distances[v] = distances[u] + w;
                 parent[v] = u;
                 pq.push({distances[v], v});
             }
@@ -46,228 +47,352 @@ void dijkstra(const vector<vector<pair<int, double>>>& graph, int source,
     }
 }
 
-void sosp_update(vector<vector<pair<int, double>>>& graph, int source, vector<int>& parent, 
-                vector<double>& distances, const vector<Edge>& inserted_edges, int num_vertices, int objective_idx) {
-    vector<vector<pair<int, double>>> grouped_edges(num_vertices);
-    for (const auto& edge : inserted_edges) {
-        grouped_edges[edge.v].push_back({edge.u, edge.weights[objective_idx]});
+void sosp_update(
+    vector<vector<pair<int,double>>>& graph,
+    int source,
+    vector<int>& parent,
+    vector<double>& distances,
+    const vector<Edge>& inserted_edges,
+    int num_vertices,
+    int obj_idx)
+{
+    vector<vector<pair<int,double>>> rev(num_vertices);
+    #pragma omp parallel for schedule(dynamic)
+    for(int u=0; u<num_vertices; u++){
+        for(auto &pr: graph[u]){
+            int v = pr.first; double w = pr.second;
+            if (w == INF) continue;
+            #pragma omp critical
+            rev[v].push_back({u,w});
+        }
     }
-    
+
+    vector<vector<pair<int,double>>> byV(num_vertices);
+    for(auto &e: inserted_edges){
+        if (e.weights[obj_idx] != INF)
+            byV[e.v].push_back({e.u, e.weights[obj_idx]});
+    }
+
     vector<int> affected;
-    vector<int> marked(num_vertices, 0);
-    
-    for (int v = 0; v < num_vertices; ++v) {
-        for (const auto& [u, weight] : grouped_edges[v]) {
-            double new_dist = distances[u] + weight;
-            if (new_dist < distances[v]) {
-                distances[v] = new_dist;
-                parent[v] = u;
-                affected.push_back(v);
+    vector<char> marked(num_vertices, 0);
+
+    if (inserted_edges.empty()) {
+        distances.assign(num_vertices, INF);
+        parent.assign(num_vertices, -1);
+        distances[source] = 0;
+        marked[source] = 1;
+        affected.push_back(source);
+        for (auto &pr : graph[source]) {
+            int v = pr.first;
+            if (pr.second != INF && !marked[v]) {
                 marked[v] = 1;
+                affected.push_back(v);
             }
         }
-    }
-    
-    while (!affected.empty()) {
-        set<int> neighbors;
-        for (int v : affected) {
-            for (const auto& [u, w] : graph[v]) {
-                neighbors.insert(u);
-            }
-        }
-        
-        vector<int> new_affected;
-        for (int v : neighbors) {
-            for (const auto& [u, weight] : graph[v]) {
-                if (marked[u] == 1) {
-                    double new_dist = distances[u] + weight;
-                    if (new_dist < distances[v]) {
-                        distances[v] = new_dist;
+    } else {
+        #pragma omp parallel for schedule(dynamic)
+        for(int v=0; v<num_vertices; v++){
+            for(auto &ue : byV[v]){
+                int u = ue.first; double w = ue.second;
+                if (w == INF) continue;
+                double nd = distances[u] + w;
+                if(nd < distances[v]){
+                    #pragma omp critical
+                    {
+                        distances[v] = nd;
                         parent[v] = u;
-                        marked[v] = 1;
-                        new_affected.push_back(v);
-                    }
-                }
-            }
-        }
-        affected = move(new_affected);
-    }
-}
-
-void initialize_graph(vector<vector<vector<pair<int, double>>>>& graph, vector<Edge>& inserted_edges, 
-                     int& num_vertices, int num_objectives, vector<Edge>& original_edges) {
-    original_edges = {
-        Edge(0, 1, {5.0, 10.0}),
-        Edge(0, 2, {2.0, 8.0}),
-        Edge(1, 3, {3.0, 4.0}),
-        Edge(2, 3, {4.0, 3.0}),
-        Edge(2, 4, {6.0, 5.0}),
-        Edge(3, 5, {2.0, 6.0}),
-        Edge(4, 5, {3.0, 2.0})
-    };
-
-    num_vertices = 6;
-    graph.resize(num_objectives, vector<vector<pair<int, double>>>(num_vertices));
-    for (const auto& edge : original_edges) {
-        for (int i = 0; i < num_objectives; ++i) {
-            graph[i][edge.u].push_back({edge.v, edge.weights[i]});
-        }
-    }
-
-    inserted_edges = {
-        Edge(1, 4, {2.0, 3.0}),
-        Edge(0, 3, {3.5, 7.0})
-    };
-}
-
-void create_combined_graph(const vector<vector<int>>& parents, int num_vertices, int num_objectives,
-                          const vector<Edge>& original_edges, const vector<Edge>& inserted_edges,
-                          vector<vector<pair<int, double>>>& combined_graph,
-                          vector<vector<CombinedEdge>>& combined_edges) {
-    combined_graph.resize(num_vertices);
-    combined_edges.resize(num_vertices);
-    
-    set<tuple<int, int>> edge_set;
-    for (int i = 0; i < num_objectives; ++i) {
-        for (int v = 0; v < num_vertices; ++v) {
-            if (parents[i][v] != -1) {
-                edge_set.insert({parents[i][v], v});
-            }
-        }
-    }
-    
-    for (const auto& [u, v] : edge_set) {
-        int count = 0;
-        vector<double> original_weights(num_objectives, -1.0);
-        for (int i = 0; i < num_objectives; ++i) {
-            if (parents[i][v] == u) {
-                count++;
-            }
-        }
-        // Check original edges
-        for (const auto& edge : original_edges) {
-            if (edge.u == u && edge.v == v) {
-                original_weights = edge.weights;
-                break;
-            }
-        }
-        // Check inserted edges
-        for (const auto& edge : inserted_edges) {
-            if (edge.u == u && edge.v == v) {
-                original_weights = edge.weights;
-                break;
-            }
-        }
-        if (original_weights[0] == -1.0) {
-            cerr << "Warning: No weights found for edge (" << u << "," << v << ")\n";
-            continue;
-        }
-        double combined_weight = num_objectives - count + 1;
-        combined_graph[u].push_back({v, combined_weight});
-        combined_edges[u].push_back(CombinedEdge(u, v, combined_weight, original_weights));
-    }
-}
-
-void mosp_update(vector<vector<vector<pair<int, double>>>>& graph, int source, 
-                 vector<vector<int>>& parents, vector<vector<double>>& distances,
-                 const vector<Edge>& inserted_edges, int num_vertices, int num_objectives,
-                 const vector<Edge>& original_edges) {
-    // Update graph with inserted edges
-    for (const auto& edge : inserted_edges) {
-        for (int i = 0; i < num_objectives; ++i) {
-            graph[i][edge.u].push_back({edge.v, edge.weights[i]});
-        }
-    }
-    
-    // Update SOSP trees
-    for (int i = 0; i < num_objectives; ++i) {
-        sosp_update(graph[i], source, parents[i], distances[i], inserted_edges, num_vertices, i);
-    }
-    
-    vector<vector<pair<int, double>>> combined_graph;
-    vector<vector<CombinedEdge>> combined_edges;
-    create_combined_graph(parents, num_vertices, num_objectives, original_edges, inserted_edges, combined_graph, combined_edges);
-    
-    vector<int> combined_parent;
-    vector<double> combined_distances;
-    dijkstra(combined_graph, source, combined_parent, combined_distances, num_vertices);
-    
-    cout << "\nMOSP Path (vertex: [weights for objectives]):\n";
-    for (int v = 0; v < num_vertices; ++v) {
-        if (combined_parent[v] != -1 || v == source) {
-            cout << "Vertex " << v << ": ";
-            if (v != source) {
-                int u = combined_parent[v];
-                bool found = false;
-                for (const auto& edge : combined_edges[u]) {
-                    if (edge.v == v) {
-                        cout << "[";
-                        for (int i = 0; i < num_objectives; ++i) {
-                            cout << edge.original_weights[i];
-                            if (i < num_objectives - 1) cout << ", ";
+                        if(!marked[v]){
+                            marked[v] = 1;
+                            affected.push_back(v);
                         }
-                        cout << "]";
-                        found = true;
-                        break;
                     }
                 }
-                if (!found) cout << "[not found]";
+            }
+        }
+    }
+
+    while(!affected.empty()){
+        vector<char> inN(num_vertices, 0);
+        #pragma omp parallel for schedule(dynamic)
+        for(int i=0; i<(int)affected.size(); i++){
+            int v = affected[i];
+            for(auto &vw: graph[v]){
+                int nbr = vw.first;
+                inN[nbr] = 1;
+            }
+        }
+
+        vector<int> N;
+        for(int v=0; v<num_vertices; v++){
+            if(inN[v]) N.push_back(v);
+        }
+
+        vector<int> new_aff;
+        #pragma omp parallel for schedule(dynamic)
+        for(int i=0; i<(int)N.size(); i++){
+            int v = N[i];
+            for(auto &uw: rev[v]){
+                int u = uw.first; double w = uw.second;
+                if (w == INF) continue;
+                if(marked[u]){
+                    double nd = distances[u] + w;
+                    if(nd < distances[v]){
+                        #pragma omp critical
+                        {
+                            distances[v] = nd;
+                            parent[v] = u;
+                            if(!marked[v]){
+                                marked[v] = 1;
+                                new_aff.push_back(v);
+                            }
+                        }
+                    }
+                }
+            }
+            for(auto &vw: graph[v]){
+                int w = vw.first; double weight = vw.second;
+                if (weight == INF) continue;
+                double nd = distances[v] + weight;
+                if(nd < distances[w]){
+                    #pragma omp critical
+                    {
+                        distances[w] = nd;
+                        parent[w] = v;
+                        if(!marked[w]){
+                            marked[w] = 1;
+                            new_aff.push_back(w);
+                        }
+                    }
+                }
+            }
+        }
+        affected.swap(new_aff);
+    }
+}
+
+void create_combined_graph(
+    const vector<vector<int>>& parents,
+    int num_vertices, int num_obj,
+    const vector<Edge>& orig, const vector<Edge>& ins,
+    vector<vector<pair<int,double>>>& comb,
+    vector<vector<CombinedEdge>>& combE)
+{
+    comb.assign(num_vertices, {});
+    combE.assign(num_vertices, {});
+    set<pair<int,int>> S;
+
+    for(int i = 0; i < num_obj; i++) {
+        for(int v = 0; v < num_vertices; v++) {
+            if (parents[i][v] >= 0) 
+                S.insert({parents[i][v], v});
+        }
+    }
+
+    for (auto &uv : S) {
+        int u = uv.first, v = uv.second;
+        int count = 0;
+        for (int i = 0; i < num_obj; i++) {
+            if (parents[i][v] == u) count++;
+        }
+
+        vector<double> ow(num_obj, INF);
+        for (auto &e : orig) {
+            if (e.u == u && e.v == v) {
+                for (int i = 0; i < num_obj; i++) {
+                    if (e.weights[i] != INF)
+                        ow[i] = e.weights[i];
+                }
+                break;
+            }
+        }
+        for (auto &e : ins) {
+            if (e.u == u && e.v == v) {
+                for (int i = 0; i < num_obj; i++) {
+                    if (e.weights[i] != INF)
+                        ow[i] = e.weights[i];
+                }
+                break;
+            }
+        }
+
+        bool hasAny = false;
+        for (double w : ow) {
+            if (w != INF) { hasAny = true; break; }
+        }
+        if (!hasAny) continue;
+
+        double cw = (num_obj - count + 1);
+        comb[u].push_back({v, cw});
+        combE[u].push_back(CombinedEdge(u, v, cw, ow));
+    }
+}
+
+void mosp_update(
+    vector<vector<vector<pair<int,double>>>>& graph,
+    int source,
+    vector<vector<int>>& parents,
+    vector<vector<double>>& distances,
+    const vector<Edge>& inserted_edges,
+    int num_vertices, int num_obj,
+    const vector<Edge>& orig_edges)
+{
+    for (auto &e : inserted_edges) {
+        for (int i = 0; i < num_obj; i++) {
+            if (e.weights[i] != INF)
+                graph[i][e.u].push_back({e.v, e.weights[i]});
+        }
+    }
+
+    #pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < num_obj; i++) {
+        sosp_update(graph[i], source,
+                    parents[i], distances[i],
+                    inserted_edges, num_vertices, i);
+    }
+
+    //////////////////////// debugging ////////////////////////
+    cout << "\nAfter update:\n";
+    for (int i = 0; i < num_obj; i++) {
+        cout << "Obj " << i + 1 << ":\n";
+        for (int v = 0; v < num_vertices; v++) {
+            if (distances[i][v] != INF)
+                cout << " v" << v + 1 << ":" << distances[i][v] << " from " << parents[i][v] + 1 << "\n";
+        }
+    }
+    //////////////////////////////////////////////////////////
+
+    vector<vector<pair<int,double>>> comb(num_vertices);
+    vector<vector<CombinedEdge>> combE(num_vertices);
+    create_combined_graph(parents, num_vertices, num_obj, orig_edges, inserted_edges, comb, combE);
+
+    ///////////////////////// debugging //////////
+    cout << "\nCombined graph edges:\n";
+    for (int u = 0; u < num_vertices; u++) {
+        for (auto &ce : combE[u]) {
+            cout << "Edge: " << ce.u + 1 << "->" << ce.v + 1 << ": ";
+            int max_w = 0;
+            for (int i = 0; i < num_obj; i++) {
+                if (ce.original_weights[i] != INF)
+                    max_w = max(max_w, (int)ce.original_weights[i]);
+            }
+            cout << ce.weight;
+            cout << "\n";
+        }
+    }
+    ///////////////////////////////////////////////
+
+    vector<int> cpar(num_vertices, -1);
+    vector<double> cd(num_vertices, INF);
+    sosp_update(comb, source, cpar, cd, {}, num_vertices, 0);
+
+    /////////////////// debugging //////////
+    cout << "\nCombined graph distances (SOSP):\n";
+    for (int v = 0; v < num_vertices; v++) {
+        if (cd[v] != INF)
+            cout << "Edge: " << cpar[v] + 1 << "->" <<  v + 1 << " with " <<cd[v]<< "\n";
+    }
+    ///////////////////////////////////////
+}
+
+void initialize_graph(
+    vector<vector<vector<pair<int,double>>>>& graph,
+    vector<Edge>& ins, int& N, int num_obj,
+    vector<Edge>& orig)
+{
+    //// example 1 ////
+    orig = {
+        {0, 1, {2, INF}},   
+        {0, 2, {7, 1}},   
+        {1, 3, {3, 4}},   
+        {3, 4, {3, 2}},   
+        {3, 5, {1, 7}},   
+        {2, 1, {INF, 2}}, 
+        {1, 4, {INF, 2}}, 
+        {4, 5, {INF, 2}}
+    };
+
+    //// example 2 ////
+    // orig = {
+    //     {0, 2, {8, INF}},   
+    //     {2, 1, {2, 1}},   
+    //     {1, 3, {3, 4}},   
+    //     {1, 4, {9, 2}},   
+    //     {3, 5, {2, 7}},
+    //     {4, 3, {2, 2}}, 
+    //     {4, 5, {6, 2}}, 
+    // };
+
+    N = 6;
+    graph.assign(num_obj, vector<vector<pair<int,double>>>(N));
+    for(auto &e: orig)
+      for(int i=0;i<num_obj;i++)
+        if(e.weights[i] != INF)
+          graph[i][e.u].push_back({e.v,e.weights[i]});
+    
+
+    //// example 1 ////      
+    ins = {
+    };
+    //// example 2 ////
+    // ins = {
+    //     {0,1,{7,INF}},
+    //     {0,4,{4,INF}},
+    //     {2,4,{1,3}}
+    // };
+}
+
+int main(){
+    int source=0, num_obj=2, N;
+    vector<Edge> inserted, original;
+    vector<vector<vector<pair<int,double>>>> graph;
+    initialize_graph(graph, inserted, N, num_obj, original);
+
+    ////////////////////////////// debugging ////////////////////////////
+    cout << "Original graph:\n";
+    for (int i = 0; i < num_obj; i++) {
+        cout << "Obj " << i + 1 << ":\n";
+        for (int u = 0; u < N; u++) {
+            cout << "Vertex " << u << ": ";
+            for (auto &vp : graph[i][u]) {
+                cout << "[" << vp.first << "," << vp.second << "] ";
             }
             cout << "\n";
         }
     }
-}
+    cout << "\nInserted edges:\n";
+    for (auto &e : inserted) {
+        cout << "Edge: " << e.u << "->" << e.v << ": ";
+        for (int i = 0; i < num_obj; i++) {
+            if (e.weights[i] != INF)
+                cout << e.weights[i] << " ";
+            else
+                cout << "INF ";
+        }
+        cout << "\n";
+    }
+    cout << "\nOriginal edges:\n";
+    for (auto &e : original) {
+        cout << "Edge: " << e.u + 1<< "->" << e.v + 1<< ": ";
+        for (int i = 0; i < num_obj; i++) {
+            if (e.weights[i] != INF)
+                cout << e.weights[i] << " ";
+            else
+                cout << "INF ";
+        }
+        cout << "\n";
+    }
+    //////////////////////////////////////////////////////////////////////
 
-int main() {
-    vector<vector<vector<pair<int, double>>>> graph;
-    vector<Edge> inserted_edges;
-    vector<Edge> original_edges;
-    int num_vertices;
-    int source = 0;
-    int num_objectives = 2;
-    vector<vector<int>> parents(num_objectives);
-    vector<vector<double>> distances(num_objectives);
-    
-    initialize_graph(graph, inserted_edges, num_vertices, num_objectives, original_edges);
-    
-    for (int i = 0; i < num_objectives; ++i) {
-        parents[i].resize(num_vertices);
-        distances[i].resize(num_vertices);
-        dijkstra(graph[i], source, parents[i], distances[i], num_vertices);
+    vector<vector<int>> parents(num_obj, vector<int>(N));
+    vector<vector<double>> distances(num_obj, vector<double>(N));
+
+    for(int i=0;i<num_obj;i++){
+        dijkstra(graph[i], source, parents[i], distances[i], N);
     }
-    
-    cout << fixed << setprecision(6);
-    for (int i = 0; i < num_objectives; ++i) {
-        cout << "\nInitial Distances (Objective " << i + 1 << "):\n";
-        for (int j = 0; j < num_vertices; ++j) {
-            if (distances[i][j] != INT_MAX) {
-                cout << "Vertex " << j << ": " << distances[i][j] << "\n";
-            }
-        }
-        cout << "Initial Parents (Objective " << i + 1 << "):\n";
-        for (int j = 0; j < num_vertices; ++j) {
-            if (parents[i][j] != -1 || j == source) {
-                cout << "Vertex " << j << ": " << parents[i][j] << "\n";
-            }
-        }
-    }
-    
-    mosp_update(graph, source, parents, distances, inserted_edges, num_vertices, num_objectives, original_edges);
-    
-    for (int i = 0; i < num_objectives; ++i) {
-        cout << "\nUpdated Distances (Objective " << i + 1 << "):\n";
-        for (int j = 0; j < num_vertices; ++j) {
-            if (distances[i][j] != INT_MAX) {
-                cout << "Vertex " << j << ": " << distances[i][j] << "\n";
-            }
-        }
-        cout << "Updated Parents (Objective " << i + 1 << "):\n";
-        for (int j = 0; j < num_vertices; ++j) {
-            if (parents[i][j] != -1 || j == source) {
-                cout << "Vertex " << j << ": " << parents[i][j] << "\n";
-            }
-        }
-    }
-    
+
+    mosp_update(graph, source, parents, distances,
+                inserted, N, num_obj, original);
+
+
     return 0;
 }
