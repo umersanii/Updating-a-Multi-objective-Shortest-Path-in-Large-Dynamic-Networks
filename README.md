@@ -31,8 +31,9 @@
 - **Print Final Results**:
   - Outputs updated `distances` and `parent` after post-Dijkstra updates.
 
-  - **Compile and Run**:
-    - Compile the program using: `g++ -o main.cpp`
-    - Run the program with: `./main`
+- **Compile and Run**:
+  - Compile the program using: `g++ -o main.cpp`
+  - Run the program with: `./main`
+  
 - **End**:
   - Program terminates, providing shortest paths before and after post-Dijkstra edge insertions.
