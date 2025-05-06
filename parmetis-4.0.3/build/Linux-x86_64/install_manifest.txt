@@ -1,0 +1,6 @@
+/usr/local/include/parmetis.h
+/usr/local/lib/libparmetis.a
+/usr/local/bin/ptest
+/usr/local/bin/mtest
+/usr/local/bin/parmetis
+/usr/local/bin/pometis
