@@ -31,44 +31,36 @@ struct CombinedEdge {
       : u(_u), v(_v), weight(_w), original_weights(_ow) {}
 };
 
-void dijkstra(const vector<vector<pair<int, double>>>& graph, int source,
-    vector<int>& parent, vector<double>& distances, int num_vertices) {
-    if (source >= num_vertices || source < 0) {
-        cerr << "Error: source node " << source << " out of bounds." << endl;
-        return;
-    }
+void dijkstra(
+    const vector<vector<pair<int, double>>>& graph,
+    int source,
+    vector<int>& parent,
+    vector<double>& dist,
+    int N)
+{
+    dist.assign(N, numeric_limits<double>::infinity());
+    parent.assign(N, -1);
+    dist[source] = 0.0;
 
-    priority_queue<pair<double,int>, vector<pair<double,int>>, greater<>> pq;
-    distances.assign(num_vertices, INF);
-    parent.assign(num_vertices, -1);
-    distances[source] = 0;
-    pq.push({0, source});
-
-    cout << "[Dijkstra] Started from node " << source << endl;
-
-    int nodes_processed = 0, edges_checked = 0, updates = 0;
+    using P = pair<double, int>;
+    priority_queue<P, vector<P>, greater<P>> pq;
+    pq.emplace(0.0, source);
 
     while (!pq.empty()) {
-        auto [dist,u] = pq.top(); pq.pop();
-        if (dist > distances[u]) continue;
+        auto [d, u] = pq.top();
+        pq.pop();
 
-        nodes_processed++;
-        for (auto &e : graph[u]) {
-            int v = e.first; double w = e.second;
-            edges_checked++;
-            if (w == INF) continue;
-            if (distances[u] + w < distances[v]) {
-                distances[v] = distances[u] + w;
+        if (d > dist[u]) continue;
+
+        for (const auto& [v, w] : graph[u]) {
+            if (dist[u] + w < dist[v]) {
+                dist[v] = dist[u] + w;
                 parent[v] = u;
-                pq.push({distances[v], v});
-                updates++;
+                pq.emplace(dist[v], v);
             }
+        }
+        // cout << ".";
     }
-}
-
-cout << "[Dijkstra] Done. Nodes: " << nodes_processed 
-<< ", Edges: " << edges_checked 
-<< ", Updates: " << updates << endl;
 }
 
 void sosp_update(
@@ -194,6 +186,12 @@ void sosp_update(
     }
 }
 
+struct pair_hash {
+    size_t operator()(const pair<int, int>& p) const {
+        return hash<int>()(p.first) ^ (hash<int>()(p.second) << 1);
+    }
+};
+
 void create_combined_graph(
     const vector<vector<int>>& parents,
     int num_vertices, int num_obj,
@@ -212,42 +210,38 @@ void create_combined_graph(
         }
     }
 
+    unordered_map<pair<int,int>, vector<double>, pair_hash> edge_weights;
+
+    for (const auto& e : orig) {
+        edge_weights[{e.u, e.v}] = e.weights;
+    }
+    for (const auto& e : ins) {
+        edge_weights[{e.u, e.v}] = e.weights;
+    }
+
     for (auto &uv : S) {
         int u = uv.first, v = uv.second;
+
         int count = 0;
         for (int i = 0; i < num_obj; i++) {
             if (parents[i][v] == u) count++;
         }
 
-        vector<double> ow(num_obj, INF);
-        for (auto &e : orig) {
-            if (e.u == u && e.v == v) {
-                for (int i = 0; i < num_obj; i++) {
-                    if (e.weights[i] != INF)
-                        ow[i] = e.weights[i];
-                }
-                break;
-            }
-        }
-        for (auto &e : ins) {
-            if (e.u == u && e.v == v) {
-                for (int i = 0; i < num_obj; i++) {
-                    if (e.weights[i] != INF)
-                        ow[i] = e.weights[i];
-                }
-                break;
-            }
+        vector<double> ow(num_obj, 1e9);
+        auto it = edge_weights.find({u, v});
+        if (it != edge_weights.end()) {
+            ow = it->second;
         }
 
         bool hasAny = false;
         for (double w : ow) {
-            if (w != INF) { hasAny = true; break; }
+            if (w != 1e9) { hasAny = true; break; }
         }
         if (!hasAny) continue;
 
         double cw = (num_obj - count + 1);
         comb[u].push_back({v, cw});
-        combE[u].push_back(CombinedEdge(u, v, cw, ow));
+        combE[u].emplace_back(u, v, cw, ow);
     }
 }
 
@@ -260,6 +254,7 @@ void mosp_update(
     int num_vertices, int num_obj,
     const vector<Edge>& orig_edges)
 {
+    cout << "In mosp_update" << endl;
     for (auto &e : inserted_edges) {
         for (int i = 0; i < num_obj; i++) {
             if (e.weights[i] != INF)
@@ -267,6 +262,7 @@ void mosp_update(
         }
     }
 
+    cout << "Running SOSP updates..." << endl;
     #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < num_obj; i++) {
         sosp_update(graph[i], source,
@@ -274,64 +270,17 @@ void mosp_update(
                     inserted_edges, num_vertices, i);
     }
 
+    cout << "Creating combined graph..." << endl;
     vector<vector<pair<int,double>>> comb(num_vertices);
     vector<vector<CombinedEdge>> combE(num_vertices);
     create_combined_graph(parents, num_vertices, num_obj, orig_edges, inserted_edges, comb, combE);
 
+    cout << "Running SOSP update on combined graph..." << endl;
     vector<int> cpar(num_vertices, -1);
     vector<double> cd(num_vertices, INF);
     sosp_update(comb, source, cpar, cd, {}, num_vertices, 0);
 
 }
-
-
-// void initialize_graph(
-//     const string& filepath,
-//     vector<vector<vector<pair<int, double>>>>& graph,
-//     vector<Edge>& ins,
-//     int& N,
-//     int num_obj,
-//     vector<Edge>& orig,
-//     int num_changes)
-// {
-//     unordered_map<int, int> id_to_index;
-//     int index = 0;
-//     vector<pair<int, int>> edge_list;
-//     ifstream file(filepath);
-//     string line;
-//     while (getline(file, line)) {
-//         stringstream ss(line);
-//         int u_id, v_id;
-//         ss >> u_id >> v_id;
-//         if (!id_to_index.count(u_id)) id_to_index[u_id] = index++;
-//         if (!id_to_index.count(v_id)) id_to_index[v_id] = index++;
-//         edge_list.emplace_back(id_to_index[u_id], id_to_index[v_id]);
-//     }
-//     N = index;
-//     graph.assign(num_obj, vector<vector<pair<int, double>>>(N));
-//     random_device rd;
-//     mt19937 gen(rd());
-//     uniform_real_distribution<> dist(1.0, 10.0);
-//     for (auto [u, v] : edge_list) {
-//         vector<double> weights(num_obj);
-//         for (int i = 0; i < num_obj; ++i)
-//             weights[i] = dist(gen);
-//         orig.emplace_back(u, v, weights);
-//         for (int i = 0; i < num_obj; ++i)
-//             graph[i][u].emplace_back(v, weights[i]);
-//     }
-//     // Generate random inserted edges
-//     uniform_int_distribution<> node_dist(0, N - 1);
-//     for (int i = 0; i < num_changes; ++i) {
-//         int u = node_dist(gen);
-//         int v = node_dist(gen);
-//         while (u == v) v = node_dist(gen); // avoid self-loop
-//         vector<double> weights(num_obj);
-//         for (int j = 0; j < num_obj; ++j)
-//             weights[j] = dist(gen);
-//         ins.emplace_back(u, v, weights);
-//     }
-// }
 
 void initialize_graph(
     const string& filepath,
@@ -342,46 +291,47 @@ void initialize_graph(
     vector<Edge>& orig,
     int num_changes)
 {
+    unordered_map<int, int> id_to_index;
+    vector<pair<int, int>> edge_list;
+    int index = 0;
+
+    // Read from file
     ifstream file(filepath);
     string line;
-    // Skip header line
+
+    // ignore first 4 rows
+    for (int i = 0; i < 4; ++i) {
+        getline(file, line);
+    }
+
     while (getline(file, line)) {
-        if (line[0] != '%') break;
+        stringstream ss(line);
+        int u_id, v_id;
+        ss >> u_id >> v_id;
+        if (!id_to_index.count(u_id)) id_to_index[u_id] = index++;
+        if (!id_to_index.count(v_id)) id_to_index[v_id] = index++;
+        edge_list.emplace_back(id_to_index[u_id], id_to_index[v_id]);
     }
-    stringstream dim_ss(line);
-    int num_edges;
-    dim_ss >> num_edges >> num_obj;  // Assuming: <number of edges> <number of objectives>
-    vector<double> all_weights;
-    while (getline(file, line)) {
-        if (line.empty()) continue;
-        all_weights.push_back(stod(line));
-    }
-    N = 0;
-    int edge_count = num_edges;
-    int total_weights = all_weights.size();
-    int vertices_guess = static_cast<int>(sqrt(edge_count)) + 1;
-    graph.assign(num_obj, vector<vector<pair<int, double>>>(vertices_guess));
-    // Generate edges with weights
-    for (int i = 0; i < edge_count; ++i) {
-        int u = i % vertices_guess;
-        int v = (i + 1) % vertices_guess; // just to simulate v
-        vector<double> weights(num_obj);
-        for (int j = 0; j < num_obj; ++j) {
-            int idx = i * num_obj + j;
-            if (idx < total_weights)
-                weights[j] = all_weights[idx];
-            else
-                weights[j] = 1.0; // default weight if missing
-        }
-        orig.emplace_back(u, v, weights);
-        for (int j = 0; j < num_obj; ++j)
-            graph[j][u].emplace_back(v, weights[j]);
-        N = max(N, max(u, v) + 1);
-    }
-    // Generate random inserted edges
+
+    N = index;
+    graph.assign(num_obj, vector<vector<pair<int, double>>>(N));
+
+    // Random number setup
     random_device rd;
     mt19937 gen(rd());
     uniform_real_distribution<> dist(1.0, 10.0);
+
+    // Original edges
+    for (auto [u, v] : edge_list) {
+        vector<double> weights(num_obj);
+        for (int i = 0; i < num_obj; ++i)
+            weights[i] = dist(gen);
+        orig.emplace_back(u, v, weights);
+        for (int i = 0; i < num_obj; ++i)
+            graph[i][u].emplace_back(v, weights[i]);
+    }
+
+    // Random insertions
     uniform_int_distribution<> node_dist(0, N - 1);
     for (int i = 0; i < num_changes; ++i) {
         int u = node_dist(gen);
@@ -395,12 +345,26 @@ void initialize_graph(
 }
 
 
+// int main() {
+//     // string dataset_path = "datasets/road_usa/road_usa.mtx";
+//     // string dataset_path = "datasets/bio-CE-CX/bio-CE-CX.edges";
+//     // string dataset_path = "datasets/GL7d16/GL7d16.mtx";
+//     // string dataset_path = "datasets/3Dspectralwave2/3Dspectralwave2.mtx";
+//     // string dataset_path = "datasets/test.data";
+//     string dataset_path = "datasets/rgg_n_2_20_s0/rgg_n_2_20_s0.mtx";
+//     int num_obj = 20, num_changes = 50, N, source = 1;
+int main(int argc, char* argv[]) {
+    if (argc < 5) {
+        cout << "Usage: " << argv[0] << " <dataset_path> <num_obj> <num_changes> <source_node>" << endl;
+        return 1;
+    }
 
-int main() {
-    // string dataset_path = "datasets/road_usa/road_usa.mtx";
-    string dataset_path = "datasets/road_usa/road_usa.mtx";
-    // string dataset_path = "datasets/test.data";
-    int num_obj = 2, num_changes = 5, N, source = 1;
+    string dataset_path = argv[1];
+    int num_obj = stoi(argv[2]);
+    int num_changes = stoi(argv[3]);
+    int source = stoi(argv[4]);
+    int N;
+
     vector<Edge> inserted, original;
     vector<vector<vector<pair<int, double>>>> graph;
 
@@ -410,7 +374,6 @@ int main() {
     auto end_graph = high_resolution_clock::now();
     cout << "Graph initialized in " 
          << duration_cast<milliseconds>(end_graph - start_graph).count() << " ms." << endl;
-
 
     cout << "Number of vertices: " << N << endl;
     cout << "Number of edges: " << original.size() + inserted.size() << endl;
@@ -424,14 +387,14 @@ int main() {
 
     cout << "Running Dijkstra's algorithm..." << endl;
     auto start_dijkstra = high_resolution_clock::now();
-    // #pragma omp parallel for schedule(dynamic)
-    // for(int j = 0; j < original.size(); j++)
+    #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < num_obj; i++) {
         dijkstra(graph[i], source, parents[i], distances[i], N);
     }
     auto end_dijkstra = high_resolution_clock::now();
     cout << "Dijkstra's algorithm completed in " 
          << duration_cast<milliseconds>(end_dijkstra - start_dijkstra).count() << " ms." << endl;
+
 
     cout << "Running MOSP update..." << endl;
     auto start_mosp = high_resolution_clock::now();
