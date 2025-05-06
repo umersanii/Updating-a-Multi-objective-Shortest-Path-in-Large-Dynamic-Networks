@@ -9,6 +9,8 @@ echo "Enter the IP address of the remote machine:"
 read REMOTE_IP
 echo "Enter the SSH port for the remote machine (e.g., 2222):"
 read REMOTE_PORT
+echo "Enter the username for the remote machine:"
+read REMOTE_USER
 
 # 1. Ensure SSH is running on both machines (if not already done)
 echo "Starting SSH service if not already running..."
@@ -21,7 +23,7 @@ if [ ! -f "$HOME/.ssh/id_rsa" ]; then
 fi
 
 # Copy the SSH key to the remote machine for passwordless login
-ssh-copy-id -i "$HOME/.ssh/id_rsa.pub" -p $REMOTE_PORT $USER@$REMOTE_IP
+ssh-copy-id -i "$HOME/.ssh/id_rsa.pub" -p $REMOTE_PORT $REMOTE_USER@$REMOTE_IP
 
 # 3. Create the MPI hosts file
 echo "Creating the MPI hosts file..."
