@@ -1,0 +1,809 @@
+#include <iostream>
+#include <vector>
+#include <set>
+#include <queue>
+#include <climits>
+#include <iomanip>
+#include <omp.h>
+#include <limits>
+#include <fstream>
+#include <sstream>
+#include <random>
+#include <unordered_map>
+#include <chrono>
+#include <mpi.h>
+
+using namespace std;
+using namespace std::chrono;
+
+const double INF = numeric_limits<double>::infinity();
+
+// Struct definitions
+struct Edge {
+    int u, v;
+    vector<double> weights;
+    Edge(int _u, int _v, const vector<double>& _w) : u(_u), v(_v), weights(_w) {}
+};
+
+struct CombinedEdge {
+    int u, v;
+    double weight;
+    vector<double> original_weights;
+    CombinedEdge(int _u, int _v, double _w, const vector<double>& _ow)
+        : u(_u), v(_v), weight(_w), original_weights(_ow) {}
+};
+
+// Function definitions
+void dijkstra(const vector<vector<pair<int, double>>>& graph, int source,
+              vector<int>& parent, vector<double>& distances, int num_vertices) {
+    if (source >= num_vertices || source < 0) {
+        cerr << "Error: source node " << source << " out of bounds." << endl;
+        return;
+    }
+
+    priority_queue<pair<double, int>, vector<pair<double, int>>, greater<>> pq;
+    distances.assign(num_vertices, INF);
+    parent.assign(num_vertices, -1);
+    distances[source] = 0;
+    pq.push({0, source});
+
+    cout << "[Dijkstra] Started from node " << source << endl;
+
+    int nodes_processed = 0, edges_checked = 0, updates = 0;
+
+    while (!pq.empty()) {
+        auto [dist, u] = pq.top();
+        pq.pop();
+        if (dist > distances[u]) continue;
+
+        nodes_processed++;
+        
+        // Process edges in parallel
+        vector<pair<int, double>> updates_needed;
+        
+        #pragma omp parallel
+        {
+            vector<pair<int, double>> local_updates;
+            
+            #pragma omp for schedule(dynamic) reduction(+:edges_checked)
+            for (size_t i = 0; i < graph[u].size(); i++) {
+                auto e = graph[u][i];
+                int v = e.first;
+                double w = e.second;
+                edges_checked++;
+                
+                if (w == INF) continue;
+                if (distances[u] + w < distances[v]) {
+                    local_updates.push_back({v, distances[u] + w});
+                }
+            }
+            
+            #pragma omp critical
+            {
+                updates_needed.insert(updates_needed.end(), local_updates.begin(), local_updates.end());
+            }
+        }
+        
+        // Apply updates outside parallel region to avoid race conditions
+        for (auto& [v, new_dist] : updates_needed) {
+            if (new_dist < distances[v]) {
+                distances[v] = new_dist;
+                parent[v] = u;
+                pq.push({distances[v], v});
+                updates++;
+            }
+        }
+    }
+
+    cout << "[Dijkstra] Done. Nodes: " << nodes_processed
+         << ", Edges: " << edges_checked
+         << ", Updates: " << updates << endl;
+}
+
+void sosp_update(
+    vector<vector<pair<int, double>>>& graph,
+    int source,
+    vector<int>& parent,
+    vector<double>& distances,
+    const vector<Edge>& inserted_edges,
+    int num_vertices,
+    int obj_idx)
+{
+    // Build reverse graph in parallel
+    vector<vector<pair<int, double>>> rev(num_vertices);
+    
+    #pragma omp parallel
+    {
+        vector<vector<pair<int, double>>> local_rev(num_vertices);
+        
+        #pragma omp for schedule(dynamic)
+        for (int u = 0; u < num_vertices; u++) {
+            for (auto &pr : graph[u]) {
+                int v = pr.first;
+                double w = pr.second;
+                if (w == INF) continue;
+                local_rev[v].push_back({u, w});
+            }
+        }
+        
+        #pragma omp critical
+        {
+            for (int v = 0; v < num_vertices; v++) {
+                rev[v].insert(rev[v].end(), local_rev[v].begin(), local_rev[v].end());
+            }
+        }
+    }
+
+    vector<vector<pair<int, double>>> byV(num_vertices);
+    for (auto &e : inserted_edges) {
+        if (e.weights[obj_idx] != INF)
+            byV[e.v].push_back({e.u, e.weights[obj_idx]});
+    }
+
+    vector<int> affected;
+    vector<char> marked(num_vertices, 0);
+
+    if (inserted_edges.empty()) {
+        distances.assign(num_vertices, INF);
+        parent.assign(num_vertices, -1);
+        distances[source] = 0;
+        marked[source] = 1;
+        affected.push_back(source);
+        
+        #pragma omp parallel
+        {
+            vector<int> local_affected;
+            
+            #pragma omp for schedule(dynamic)
+            for (size_t i = 0; i < graph[source].size(); i++) {
+                auto &pr = graph[source][i];
+                int v = pr.first;
+                if (pr.second != INF && !marked[v]) {
+                    #pragma omp critical
+                    {
+                        if (!marked[v]) {
+                            marked[v] = 1;
+                            local_affected.push_back(v);
+                        }
+                    }
+                }
+            }
+            
+            #pragma omp critical
+            {
+                affected.insert(affected.end(), local_affected.begin(), local_affected.end());
+            }
+        }
+    } else {
+        #pragma omp parallel
+        {
+            vector<int> local_affected;
+            
+            #pragma omp for schedule(dynamic)
+            for (int v = 0; v < num_vertices; v++) {
+                for (size_t j = 0; j < byV[v].size(); j++) {
+                    auto &ue = byV[v][j];
+                    int u = ue.first;
+                    double w = ue.second;
+                    if (w == INF) continue;
+                    double nd = distances[u] + w;
+                    if (nd < distances[v]) {
+                        #pragma omp critical
+                        {
+                            if (nd < distances[v]) {
+                                distances[v] = nd;
+                                parent[v] = u;
+                                if (!marked[v]) {
+                                    marked[v] = 1;
+                                    local_affected.push_back(v);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            #pragma omp critical
+            {
+                affected.insert(affected.end(), local_affected.begin(), local_affected.end());
+            }
+        }
+    }
+
+    while (!affected.empty()) {
+        vector<char> inN(num_vertices, 0);
+        
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < (int)affected.size(); i++) {
+            int v = affected[i];
+            for (auto &vw : graph[v]) {
+                int nbr = vw.first;
+                #pragma omp atomic write
+                inN[nbr] = 1;
+            }
+        }
+
+        vector<int> N;
+        for (int v = 0; v < num_vertices; v++) {
+            if (inN[v]) N.push_back(v);
+        }
+
+        vector<int> new_aff;
+        
+        #pragma omp parallel
+        {
+            vector<int> local_new_aff;
+            
+            #pragma omp for schedule(dynamic)
+            for (int i = 0; i < (int)N.size(); i++) {
+                int v = N[i];
+                
+                // Process reverse edges
+                for (auto &uw : rev[v]) {
+                    int u = uw.first;
+                    double w = uw.second;
+                    if (w == INF) continue;
+                    if (marked[u]) {
+                        double nd = distances[u] + w;
+                        if (nd < distances[v]) {
+                            #pragma omp critical
+                            {
+                                if (nd < distances[v]) {
+                                    distances[v] = nd;
+                                    parent[v] = u;
+                                    if (!marked[v]) {
+                                        marked[v] = 1;
+                                        local_new_aff.push_back(v);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Process forward edges
+                for (auto &vw : graph[v]) {
+                    int w = vw.first;
+                    double weight = vw.second;
+                    if (weight == INF) continue;
+                    double nd = distances[v] + weight;
+                    if (nd < distances[w]) {
+                        #pragma omp critical
+                        {
+                            if (nd < distances[w]) {
+                                distances[w] = nd;
+                                parent[w] = v;
+                                if (!marked[w]) {
+                                    marked[w] = 1;
+                                    local_new_aff.push_back(w);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            #pragma omp critical
+            {
+                new_aff.insert(new_aff.end(), local_new_aff.begin(), local_new_aff.end());
+            }
+        }
+        
+        affected.swap(new_aff);
+    }
+}
+
+void create_combined_graph(
+    const vector<vector<int>>& parents,
+    int num_vertices, int num_obj,
+    const vector<Edge>& orig, const vector<Edge>& ins,
+    vector<vector<pair<int, double>>>& comb,
+    vector<vector<CombinedEdge>>& combE)
+{
+    comb.assign(num_vertices, {});
+    combE.assign(num_vertices, {});
+    set<pair<int, int>> S;
+
+    // Collect parent-child pairs in parallel
+    #pragma omp parallel
+    {
+        set<pair<int, int>> local_S;
+        
+        #pragma omp for schedule(dynamic) collapse(2)
+        for (int i = 0; i < num_obj; i++) {
+            for (int v = 0; v < num_vertices; v++) {
+                if (parents[i][v] >= 0) {
+                    local_S.insert({parents[i][v], v});
+                }
+            }
+        }
+        
+        #pragma omp critical
+        {
+            S.insert(local_S.begin(), local_S.end());
+        }
+    }
+
+    // Convert set to vector for parallel iteration
+    vector<pair<int, int>> S_vec(S.begin(), S.end());
+    
+    vector<CombinedEdge> temp_combE;
+    vector<tuple<int, int, double>> temp_comb;
+    
+    #pragma omp parallel
+    {
+        vector<CombinedEdge> local_combE;
+        vector<tuple<int, int, double>> local_comb;
+        
+        #pragma omp for schedule(dynamic)
+        for (size_t i = 0; i < S_vec.size(); i++) {
+            int u = S_vec[i].first, v = S_vec[i].second;
+            int count = 0;
+            
+            for (int j = 0; j < num_obj; j++) {
+                if (parents[j][v] == u) count++;
+            }
+
+            vector<double> ow(num_obj, INF);
+            for (auto &e : orig) {
+                if (e.u == u && e.v == v) {
+                    for (int j = 0; j < num_obj; j++) {
+                        if (e.weights[j] != INF)
+                            ow[j] = e.weights[j];
+                    }
+                    break;
+                }
+            }
+            for (auto &e : ins) {
+                if (e.u == u && e.v == v) {
+                    for (int j = 0; j < num_obj; j++) {
+                        if (e.weights[j] != INF)
+                            ow[j] = e.weights[j];
+                    }
+                    break;
+                }
+            }
+
+            bool hasAny = false;
+            for (double w : ow) {
+                if (w != INF) { hasAny = true; break; }
+            }
+            if (!hasAny) continue;
+
+            double cw = (num_obj - count + 1);
+            local_comb.push_back({u, v, cw});
+            local_combE.push_back(CombinedEdge(u, v, cw, ow));
+        }
+        
+        #pragma omp critical
+        {
+            temp_combE.insert(temp_combE.end(), local_combE.begin(), local_combE.end());
+            temp_comb.insert(temp_comb.end(), local_comb.begin(), local_comb.end());
+        }
+    }
+    
+    // Consolidate results
+    for (auto& [u, v, cw] : temp_comb) {
+        comb[u].push_back({v, cw});
+    }
+    
+    for (auto& edge : temp_combE) {
+        combE[edge.u].push_back(edge);
+    }
+}
+
+void mosp_update(
+    vector<vector<vector<pair<int, double>>>>& graph,
+    int source,
+    vector<vector<int>>& parents,
+    vector<vector<double>>& distances,
+    const vector<Edge>& inserted_edges,
+    int num_vertices, int num_obj,
+    const vector<Edge>& orig_edges)
+{
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    // Distribute objectives across MPI processes
+    int objs_per_process = num_obj / size;
+    int start_obj = rank * objs_per_process;
+    int end_obj = (rank == size - 1) ? num_obj : start_obj + objs_per_process;
+
+    if (rank == 0) {
+        cout << "[MOSP] Distributing " << num_obj << " objectives across " << size << " processes." << endl;
+        cout << "[MOSP] Process " << rank << " handles objectives " << start_obj << " to " << end_obj - 1 << endl;
+    }
+
+    // Update graph with inserted edges
+    #pragma omp parallel for collapse(2)
+    for (int i = 0; i < num_obj; i++) {
+        for (size_t j = 0; j < inserted_edges.size(); j++) {
+            const auto &e = inserted_edges[j];
+            if (e.weights[i] != INF) {
+                #pragma omp critical
+                {
+                    graph[i][e.u].push_back({e.v, e.weights[i]});
+                }
+            }
+        }
+    }
+
+    // Process assigned objectives in parallel
+    #pragma omp parallel for schedule(dynamic)
+    for (int i = start_obj; i < end_obj; i++) {
+        sosp_update(graph[i], source, parents[i], distances[i], inserted_edges, num_vertices, i);
+    }
+
+    // Gather distances and parents
+    vector<double> all_distances(num_obj * num_vertices, INF);
+    vector<int> all_parents(num_obj * num_vertices, -1);
+
+    vector<double> local_distances((end_obj - start_obj) * num_vertices);
+    vector<int> local_parents((end_obj - start_obj) * num_vertices);
+
+    #pragma omp parallel for collapse(2)
+    for (int i = start_obj; i < end_obj; i++) {
+        for (int v = 0; v < num_vertices; v++) {
+            int offset = (i - start_obj) * num_vertices;
+            local_distances[offset + v] = distances[i][v];
+            local_parents[offset + v] = parents[i][v];
+        }
+    }
+
+    // Adjust counts for uneven distribution
+    vector<int> recv_counts(size);
+    vector<int> displs(size);
+    int total_objs = num_obj;
+    for (int i = 0; i < size; i++) {
+        int objs = (i == size - 1) ? (total_objs - i * objs_per_process) : objs_per_process;
+        recv_counts[i] = objs * num_vertices;
+        displs[i] = i * objs_per_process * num_vertices;
+    }
+
+    MPI_Gatherv(
+        local_distances.data(), (end_obj - start_obj) * num_vertices, MPI_DOUBLE,
+        all_distances.data(), recv_counts.data(), displs.data(), MPI_DOUBLE,
+        0, MPI_COMM_WORLD);
+
+    MPI_Gatherv(
+        local_parents.data(), (end_obj - start_obj) * num_vertices, MPI_INT,
+        all_parents.data(), recv_counts.data(), displs.data(), MPI_INT,
+        0, MPI_COMM_WORLD);
+
+    // Broadcast combined results
+    MPI_Bcast(all_distances.data(), num_obj * num_vertices, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(all_parents.data(), num_obj * num_vertices, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // Copy back results in parallel
+    #pragma omp parallel for collapse(2)
+    for (int i = 0; i < num_obj; i++) {
+        for (int v = 0; v < num_vertices; v++) {
+            int offset = i * num_vertices;
+            distances[i][v] = all_distances[offset + v];
+            parents[i][v] = all_parents[offset + v];
+        }
+    }
+
+    // Combined graph processing
+    vector<vector<pair<int, double>>> comb(num_vertices);
+    vector<vector<CombinedEdge>> combE(num_vertices);
+    create_combined_graph(parents, num_vertices, num_obj, orig_edges, inserted_edges, comb, combE);
+
+    vector<int> cpar(num_vertices, -1);
+    vector<double> cd(num_vertices, INF);
+    sosp_update(comb, source, cpar, cd, {}, num_vertices, 0);
+
+    if (rank == 0) {
+        cout << "[MOSP] Update completed." << endl;
+    }
+}
+
+void initialize_graph(
+    const string& filepath,
+    vector<vector<vector<pair<int, double>>>>& graph,
+    vector<Edge>& ins,
+    int& N,
+    int num_obj,
+    vector<Edge>& orig,
+    int num_changes)
+{
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    if (rank == 0) {
+        cout << "Initializing graph..." << endl;
+
+        ifstream file(filepath);
+        if (!file.is_open()) {
+            cerr << "Error: Could not open file " << filepath << endl;
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+
+        unordered_map<long long, int> id_to_index;
+        int index = 0;
+        vector<pair<int, int>> edge_list;
+        string line;
+
+        // Parse file sequentially as file I/O is typically not parallelizable
+        while (getline(file, line)) {
+            if (line.empty() || line[0] == '%') continue;
+            stringstream ss(line);
+            long long u_id, v_id;
+            if (ss >> u_id >> v_id) {
+                if (!id_to_index.count(u_id)) id_to_index[u_id] = index++;
+                if (!id_to_index.count(v_id)) id_to_index[v_id] = index++;
+                edge_list.emplace_back(id_to_index[u_id], id_to_index[v_id]);
+            }
+        }
+        file.close();
+
+        N = index;
+        cout << "Number of vertices: " << N << ", Number of edges: " << edge_list.size() << endl;
+
+        graph.assign(num_obj, vector<vector<pair<int, double>>>(N));
+        orig.reserve(edge_list.size());
+
+        random_device rd;
+        mt19937 gen(rd());
+        uniform_real_distribution<> dist(1.0, 10.0);
+
+        // Generate edge weights in parallel
+        vector<vector<double>> all_weights(edge_list.size(), vector<double>(num_obj));
+        
+        #pragma omp parallel for schedule(dynamic)
+        for (size_t i = 0; i < edge_list.size(); i++) {
+            vector<double> weights(num_obj);
+            for (int j = 0; j < num_obj; j++) {
+                weights[j] = dist(gen);
+            }
+            all_weights[i] = weights;
+        }
+        
+        // Build edge list sequentially to avoid race conditions
+        for (size_t i = 0; i < edge_list.size(); i++) {
+            const auto& [u, v] = edge_list[i];
+            orig.emplace_back(u, v, all_weights[i]);
+        }
+        
+        // Build graph in parallel
+        #pragma omp parallel for collapse(2)
+        for (int i = 0; i < num_obj; i++) {
+            for (size_t j = 0; j < edge_list.size(); j++) {
+                const auto& [u, v] = edge_list[j];
+                #pragma omp critical
+                {
+                    graph[i][u].emplace_back(v, all_weights[j][i]);
+                }
+            }
+        }
+
+        // Generate inserted edges
+        uniform_int_distribution<> node_dist(0, N - 1);
+        ins.reserve(num_changes);
+        
+        for (int i = 0; i < num_changes; i++) {
+            int u = node_dist(gen);
+            int v = node_dist(gen);
+            while (u == v) v = node_dist(gen);
+            
+            vector<double> weights(num_obj);
+            
+            #pragma omp parallel for
+            for (int j = 0; j < num_obj; j++) {
+                weights[j] = dist(gen);
+            }
+            
+            ins.emplace_back(u, v, weights);
+        }
+
+        cout << "Graph initialized successfully." << endl;
+    }
+
+    // Broadcast N
+    MPI_Bcast(&N, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // Broadcast original edges
+    int orig_size = (rank == 0) ? orig.size() : 0;
+    MPI_Bcast(&orig_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    vector<int> orig_u(orig_size), orig_v(orig_size);
+    vector<double> orig_weights(orig_size * num_obj);
+    
+    if (rank == 0) {
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < orig_size; i++) {
+            orig_u[i] = orig[i].u;
+            orig_v[i] = orig[i].v;
+            for (int j = 0; j < num_obj; j++) {
+                orig_weights[i * num_obj + j] = orig[i].weights[j];
+            }
+        }
+    }
+    
+    MPI_Bcast(orig_u.data(), orig_size, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(orig_v.data(), orig_size, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(orig_weights.data(), orig_size * num_obj, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    
+    if (rank != 0) {
+        orig.clear();
+        orig.reserve(orig_size);
+        
+        #pragma omp parallel
+        {
+            vector<Edge> local_orig;
+            
+            #pragma omp for schedule(dynamic)
+            for (int i = 0; i < orig_size; i++) {
+                vector<double> weights(num_obj);
+                for (int j = 0; j < num_obj; j++) {
+                    weights[j] = orig_weights[i * num_obj + j];
+                }
+                local_orig.emplace_back(orig_u[i], orig_v[i], weights);
+            }
+            
+            #pragma omp critical
+            {
+                orig.insert(orig.end(), local_orig.begin(), local_orig.end());
+            }
+        }
+    }
+
+    // Broadcast inserted edges
+    int ins_size = (rank == 0) ? ins.size() : 0;
+    MPI_Bcast(&ins_size, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    vector<int> ins_u(ins_size), ins_v(ins_size);
+    vector<double> ins_weights(ins_size * num_obj);
+    
+    if (rank == 0) {
+        #pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < ins_size; i++) {
+            ins_u[i] = ins[i].u;
+            ins_v[i] = ins[i].v;
+            for (int j = 0; j < num_obj; j++) {
+                ins_weights[i * num_obj + j] = ins[i].weights[j];
+            }
+        }
+    }
+    
+    MPI_Bcast(ins_u.data(), ins_size, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(ins_v.data(), ins_size, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(ins_weights.data(), ins_size * num_obj, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    
+    if (rank != 0) {
+        ins.clear();
+        ins.reserve(ins_size);
+        
+        #pragma omp parallel
+        {
+            vector<Edge> local_ins;
+            
+            #pragma omp for schedule(dynamic)
+            for (int i = 0; i < ins_size; i++) {
+                vector<double> weights(num_obj);
+                for (int j = 0; j < num_obj; j++) {
+                    weights[j] = ins_weights[i * num_obj + j];
+                }
+                local_ins.emplace_back(ins_u[i], ins_v[i], weights);
+            }
+            
+            #pragma omp critical
+            {
+                ins.insert(ins.end(), local_ins.begin(), local_ins.end());
+            }
+        }
+    }
+
+    // Initialize graph on non-root processes
+    if (rank != 0) {
+        graph.assign(num_obj, vector<vector<pair<int, double>>>(N));
+        
+        #pragma omp parallel
+        {
+            vector<vector<vector<pair<int, double>>>> local_graph(num_obj, vector<vector<pair<int, double>>>(N));
+            
+            #pragma omp for schedule(dynamic)
+            for (size_t i = 0; i < orig.size(); i++) {
+                for (int j = 0; j < num_obj; j++) {
+                    if (orig[i].weights[j] != INF) {
+                        local_graph[j][orig[i].u].emplace_back(orig[i].v, orig[i].weights[j]);
+                    }
+                }
+            }
+            
+            #pragma omp critical
+            {
+                for (int j = 0; j < num_obj; j++) {
+                    for (int u = 0; u < N; u++) {
+                        graph[j][u].insert(graph[j][u].end(), local_graph[j][u].begin(), local_graph[j][u].end());
+                    }
+                }
+            }
+        }
+    }
+}
+
+int main(int argc, char** argv) {
+    int provided;
+    MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &provided);
+    
+    if (provided < MPI_THREAD_FUNNELED) {
+        cerr << "Warning: The MPI implementation does not support the required thread level" << endl;
+    }
+
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    // Set number of OpenMP threads
+    int num_threads = omp_get_max_threads();
+    if (rank == 0) {
+        cout << "Using " << size << " MPI processes with " << num_threads << " OpenMP threads each" << endl;
+    }
+
+    string dataset_path = "datasets/road_usa/road_usa.mtx";
+    int num_obj = 2, num_changes = 5, N, source = 1;
+    vector<Edge> inserted, original;
+    vector<vector<vector<pair<int, double>>>> graph;
+
+    if (rank == 0) {
+        cout << "Initializing graph..." << endl;
+    }
+    
+    auto start_graph = high_resolution_clock::now();
+    initialize_graph(dataset_path, graph, inserted, N, num_obj, original, num_changes);
+    auto end_graph = high_resolution_clock::now();
+    
+    if (rank == 0) {
+        cout << "Graph initialized in "
+             << duration_cast<milliseconds>(end_graph - start_graph).count() << " ms." << endl;
+        cout << "Number of vertices: " << N << endl;
+        cout << "Number of edges: " << (original.size() + inserted.size()) << endl;
+        cout << "Number of objects: " << num_obj << endl;
+        cout << "Number of changes: " << inserted.size() << endl;
+    }
+
+    vector<vector<int>> parents(num_obj, vector<int>(N));
+    vector<vector<double>> distances(num_obj, vector<double>(N));
+
+    if (rank == 0) {
+        cout << "Running Dijkstra's algorithm..." << endl;
+    }
+    
+    auto start_dijkstra = high_resolution_clock::now();
+    
+    #pragma omp parallel for schedule(dynamic)
+    for (int i = 0; i < num_obj; i++) {
+        dijkstra(graph[i], source, parents[i], distances[i], N);
+    }
+    
+    auto end_dijkstra = high_resolution_clock::now();
+    
+    if (rank == 0) {
+        cout << "Dijkstra's algorithm completed in "
+             << duration_cast<milliseconds>(end_dijkstra - start_dijkstra).count() << " ms." << endl;
+    }
+
+    if (rank == 0) {
+        cout << "Running MOSP update..." << endl;
+    }
+    
+    auto start_mosp = high_resolution_clock::now();
+    mosp_update(graph, source, parents, distances, inserted, N, num_obj, original);
+    auto end_mosp = high_resolution_clock::now();
+    
+    if (rank == 0) {
+        cout << "MOSP update completed in "
+             << duration_cast<milliseconds>(end_mosp - start_mosp).count() << " ms." << endl;
+    }
+
+    // Optional: Output some results for verification
+    if (rank == 0) {
+        cout << "Sample distances from source " << source << " for first objective:" << endl;
+        for (int v = 0; v < min(5, N); v++) {
+            cout << "Node " << v << ": " << (distances[0][v] == INF ? "INF" : to_string(distances[0][v])) << endl;
+        }
+    }
+
+    MPI_Finalize();
+    return 0;
+}
