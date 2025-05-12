@@ -72,19 +72,26 @@ void sosp_update(
     int num_vertices,
     int obj_idx)
 {
-    vector<vector<pair<int,double>>> rev(num_vertices);
-    for(int u=0; u<num_vertices; u++){
-        for(auto &pr: graph[u]){
-            int v = pr.first; double w = pr.second;
+    const double INF = 1e9;
+
+    // Reverse graph construction
+    vector<vector<pair<int, double>>> rev(num_vertices);
+    for (int u = 0; u < num_vertices; u++) {
+        for (int i = 0; i < graph[u].size(); i++) {
+            int v = graph[u][i].first;
+            double w = graph[u][i].second;
             if (w == INF) continue;
-            rev[v].push_back({u,w});
+            rev[v].push_back(make_pair(u, w));
         }
     }
 
-    vector<vector<pair<int,double>>> byV(num_vertices);
-    for(auto &e: inserted_edges){
-        if (e.weights[obj_idx] != INF)
-            byV[e.v].push_back({e.u, e.weights[obj_idx]});
+    // byV[v] = list of incoming edges to v from inserted_edges
+    vector<vector<pair<int, double>>> byV(num_vertices);
+    for (int i = 0; i < inserted_edges.size(); i++) {
+        const Edge& e = inserted_edges[i];
+        if (e.weights[obj_idx] != INF) {
+            byV[e.v].push_back(make_pair(e.u, e.weights[obj_idx]));
+        }
     }
 
     vector<int> affected;
@@ -96,87 +103,95 @@ void sosp_update(
         distances[source] = 0;
         marked[source] = 1;
         affected.push_back(source);
-        for (auto &pr : graph[source]) {
-            int v = pr.first;
-            if (pr.second != INF && !marked[v]) {
+
+        for (int i = 0; i < graph[source].size(); i++) {
+            int v = graph[source][i].first;
+            double w = graph[source][i].second;
+            if (w != INF && !marked[v]) {
                 marked[v] = 1;
                 affected.push_back(v);
             }
         }
     } else {
-        for(int v=0; v<num_vertices; v++){
-            for(auto &ue : byV[v]){
-                int u = ue.first; double w = ue.second;
+        for (int v = 0; v < num_vertices; v++) {
+            for (int i = 0; i < byV[v].size(); i++) {
+                int u = byV[v][i].first;
+                double w = byV[v][i].second;
                 if (w == INF) continue;
                 double nd = distances[u] + w;
-                if(nd < distances[v]){
-                    {
-                        distances[v] = nd;
-                        parent[v] = u;
-                        if(!marked[v]){
-                            marked[v] = 1;
-                            affected.push_back(v);
-                        }
+                if (nd < distances[v]) {
+                    distances[v] = nd;
+                    parent[v] = u;
+                    if (!marked[v]) {
+                        marked[v] = 1;
+                        affected.push_back(v);
                     }
                 }
             }
         }
     }
 
-    while(!affected.empty()){
+    while (!affected.empty()) {
         vector<char> inN(num_vertices, 0);
-        for(int i=0; i<(int)affected.size(); i++){
+
+        for (int i = 0; i < affected.size(); i++) {
             int v = affected[i];
-            for(auto &vw: graph[v]){
-                int nbr = vw.first;
+            for (int j = 0; j < graph[v].size(); j++) {
+                int nbr = graph[v][j].first;
                 inN[nbr] = 1;
             }
         }
 
         vector<int> N;
-        for(int v=0; v<num_vertices; v++){
-            if(inN[v]) N.push_back(v);
+        for (int v = 0; v < num_vertices; v++) {
+            if (inN[v]) {
+                N.push_back(v);
+            }
         }
 
         vector<int> new_aff;
-        for(int i=0; i<(int)N.size(); i++){
+        for (int i = 0; i < N.size(); i++) {
             int v = N[i];
-            for(auto &uw: rev[v]){
-                int u = uw.first; double w = uw.second;
+
+            // Backward edges (rev)
+            for (int j = 0; j < rev[v].size(); j++) {
+                int u = rev[v][j].first;
+                double w = rev[v][j].second;
                 if (w == INF) continue;
-                if(marked[u]){
+                if (marked[u]) {
                     double nd = distances[u] + w;
-                    if(nd < distances[v]){
-                        {
-                            distances[v] = nd;
-                            parent[v] = u;
-                            if(!marked[v]){
-                                marked[v] = 1;
-                                new_aff.push_back(v);
-                            }
+                    if (nd < distances[v]) {
+                        distances[v] = nd;
+                        parent[v] = u;
+                        if (!marked[v]) {
+                            marked[v] = 1;
+                            new_aff.push_back(v);
                         }
                     }
                 }
             }
-            for(auto &vw: graph[v]){
-                int w = vw.first; double weight = vw.second;
+
+            // Forward edges
+            for (int j = 0; j < graph[v].size(); j++) {
+                int w_node = graph[v][j].first;
+                double weight = graph[v][j].second;
                 if (weight == INF) continue;
                 double nd = distances[v] + weight;
-                if(nd < distances[w]){
-                    {
-                        distances[w] = nd;
-                        parent[w] = v;
-                        if(!marked[w]){
-                            marked[w] = 1;
-                            new_aff.push_back(w);
-                        }
+                if (nd < distances[w_node]) {
+                    distances[w_node] = nd;
+                    parent[w_node] = v;
+                    if (!marked[w_node]) {
+                        marked[w_node] = 1;
+                        new_aff.push_back(w_node);
                     }
                 }
             }
         }
+
         affected.swap(new_aff);
     }
 }
+
 
 struct pair_hash {
     size_t operator()(const pair<int, int>& p) const {
@@ -184,57 +199,110 @@ struct pair_hash {
     }
 };
 
-void create_combined_graph(
-    const vector<vector<int>>& parents,
-    int num_vertices, int num_obj,
-    const vector<Edge>& orig, const vector<Edge>& ins,
-    vector<vector<pair<int,double>>>& comb,
-    vector<vector<CombinedEdge>>& combE)
+void create_combined_graph(const vector<vector<int>>& parents, int num_vertices, int num_obj, const vector<Edge>& orig, const vector<Edge>& ins,vector<vector<pair<int, double>>>& comb, vector<vector<CombinedEdge>>& combE)
 {
     comb.assign(num_vertices, {});
     combE.assign(num_vertices, {});
-    set<pair<int,int>> S;
 
-    for(int i = 0; i < num_obj; i++) {
-        for(int v = 0; v < num_vertices; v++) {
-            if (parents[i][v] >= 0) 
-                S.insert({parents[i][v], v});
+    //////////////////////////////////////////////////////////////////debug
+    // auto start_step1 = high_resolution_clock::now();
+    ////////////////////////////////////////////////////////////////////////
+    // Step 1: Build set S in parallel (collect and merge later)
+    vector<set<pair<int, int>>> local_Sets(omp_get_max_threads());
+
+    #pragma omp parallel for collapse(2)
+    for (int i = 0; i < num_obj; i++) {
+        for (int v = 0; v < num_vertices; v++) {
+            if (parents[i][v] >= 0) {
+                int tid = omp_get_thread_num();
+                local_Sets[tid].insert({parents[i][v], v});
+            }
         }
     }
 
-    unordered_map<pair<int,int>, vector<double>, pair_hash> edge_weights;
+    // Merge local sets
+    set<pair<int, int>> S;
+    for (auto& ls : local_Sets)
+        S.insert(ls.begin(), ls.end());
 
-    for (const auto& e : orig) {
-        edge_weights[{e.u, e.v}] = e.weights;
-    }
-    for (const auto& e : ins) {
-        edge_weights[{e.u, e.v}] = e.weights;
+    ////////////////////////////////////////////////////////// debug
+    // auto end_step1 = high_resolution_clock::now();
+    // cout << "Step 1 completed in " 
+    //      << duration_cast<milliseconds>(end_step1 - start_step1).count() << " ms." << endl;
+
+    // auto start_step2 = high_resolution_clock::now();
+    //////////////////////////////////////////////////////////////////////////
+    // Step 2: Build edge_weights
+    unordered_map<pair<int, int>, vector<double>, pair_hash> edge_weights;
+
+    #pragma omp parallel
+    {
+        unordered_map<pair<int, int>, vector<double>, pair_hash> local_map;
+
+        #pragma omp for nowait
+        for (int i = 0; i < (int)orig.size(); i++) {
+            const Edge& e = orig[i];
+            local_map[make_pair(e.u, e.v)] = e.weights;
+        }
+
+        #pragma omp for nowait
+        for (int i = 0; i < (int)ins.size(); i++) {
+            const Edge& e = ins[i];
+            local_map[make_pair(e.u, e.v)] = e.weights;
+        }
+
+        #pragma omp critical
+        {
+            for (auto& kv : local_map)
+                edge_weights[kv.first] = kv.second;
+        }
     }
 
-    for (auto &uv : S) {
-        int u = uv.first, v = uv.second;
+    // auto end_step2 = high_resolution_clock::now();
+    // cout << "Step 2 completed in " 
+    //      << duration_cast<milliseconds>(end_step2 - start_step2).count() << " ms." << endl;
+
+    // auto start_step3 = high_resolution_clock::now();
+    // Step 3: Process S in parallel to fill comb and combE
+    #pragma omp parallel for
+    for (int idx = 0; idx < (int)S.size(); idx++) {
+        auto it = std::next(S.begin(), idx);
+        int u = it->first;
+        int v = it->second;
 
         int count = 0;
         for (int i = 0; i < num_obj; i++) {
-            if (parents[i][v] == u) count++;
+            if (parents[i][v] == u)
+                count++;
         }
 
         vector<double> ow(num_obj, 1e9);
-        auto it = edge_weights.find({u, v});
-        if (it != edge_weights.end()) {
-            ow = it->second;
+        auto found = edge_weights.find({u, v});
+        if (found != edge_weights.end()) {
+            ow = found->second;
         }
 
         bool hasAny = false;
         for (double w : ow) {
-            if (w != 1e9) { hasAny = true; break; }
+            if (w != 1e9) {
+                hasAny = true;
+                break;
+            }
         }
         if (!hasAny) continue;
 
         double cw = (num_obj - count + 1);
-        comb[u].push_back({v, cw});
-        combE[u].emplace_back(u, v, cw, ow);
+
+        #pragma omp critical
+        {
+            comb[u].emplace_back(v, cw);
+            combE[u].emplace_back(u, v, cw, ow);
+        }
     }
+
+    // auto end_step3 = high_resolution_clock::now();
+    // cout << "Step 3 completed in " 
+    //      << duration_cast<milliseconds>(end_step3 - start_step3).count() << " ms." << endl;
 }
 
 void mosp_update(
@@ -246,7 +314,7 @@ void mosp_update(
     int num_vertices, int num_obj,
     const vector<Edge>& orig_edges)
 {
-    cout << "In mosp_update" << endl;
+    // cout << "In mosp_update" << endl;
     #pragma omp parallel for
     for (auto &e : inserted_edges) {
         for (int i = 0; i < num_obj; i++) {
@@ -255,7 +323,7 @@ void mosp_update(
         }
     }
 
-    cout << "Running SOSP updates..." << endl;
+    // cout << "Running SOSP updates..." << endl;
     #pragma omp parallel for
     for (int i = 0; i < num_obj; i++) {
         sosp_update(graph[i], source,
@@ -263,12 +331,12 @@ void mosp_update(
                     inserted_edges, num_vertices, i);
     }
 
-    cout << "Creating combined graph..." << endl;
+    // cout << "Creating combined graph..." << endl;
     vector<vector<pair<int,double>>> comb(num_vertices);
     vector<vector<CombinedEdge>> combE(num_vertices);
     create_combined_graph(parents, num_vertices, num_obj, orig_edges, inserted_edges, comb, combE);
 
-    cout << "Running SOSP update on combined graph..." << endl;
+    // cout << "Running SOSP update on combined graph..." << endl;
     vector<int> cpar(num_vertices, -1);
     vector<double> cd(num_vertices, INF);
     sosp_update(comb, source, cpar, cd, {}, num_vertices, 0);
@@ -358,15 +426,16 @@ int main(int argc, char* argv[]) {
     int source = stoi(argv[4]);
     int N;
 
+    cout<<num_obj<<","<<num_changes<<",";
+
     vector<Edge> inserted, original;
     vector<vector<vector<pair<int, double>>>> graph;
 
-    cout << "Initializing graph..." << endl;
+    // cout << "Initializing graph..." << endl;
     auto start_graph = high_resolution_clock::now();
     initialize_graph(dataset_path, graph, inserted, N, num_obj, original, num_changes);
     auto end_graph = high_resolution_clock::now();
-    cout << "Graph initialized in " 
-         << duration_cast<milliseconds>(end_graph - start_graph).count() << " ms." << endl;
+    cout << duration_cast<milliseconds>(end_graph - start_graph).count() << ",";
 
     // cout << "Number of vertices: " << N << endl;
     // cout << "Number of edges: " << original.size() + inserted.size() << endl;
@@ -378,23 +447,21 @@ int main(int argc, char* argv[]) {
     vector<vector<int>> parents(num_obj, vector<int>(N));
     vector<vector<double>> distances(num_obj, vector<double>(N));
 
-    cout << "Running Dijkstra's algorithm..." << endl;
+    // cout << "Running Dijkstra's algorithm..." << endl;
     auto start_dijkstra = high_resolution_clock::now();
     #pragma omp parallel for
     for (int i = 0; i < num_obj; i++) {
         dijkstra(graph[i], source, parents[i], distances[i], N);
     }
     auto end_dijkstra = high_resolution_clock::now();
-    cout << "Dijkstra's algorithm completed in " 
-         << duration_cast<milliseconds>(end_dijkstra - start_dijkstra).count() << " ms." << endl;
+    cout << duration_cast<milliseconds>(end_dijkstra - start_dijkstra).count() << ",";
 
 
-    cout << "Running MOSP update..." << endl;
+    // cout << "Running MOSP update..." << endl;
     auto start_mosp = high_resolution_clock::now();
     mosp_update(graph, source, parents, distances, inserted, N, num_obj, original);
     auto end_mosp = high_resolution_clock::now();
-    cout << "MOSP update completed in " 
-         << duration_cast<milliseconds>(end_mosp - start_mosp).count() << " ms." << endl;
+    cout << duration_cast<milliseconds>(end_mosp - start_mosp).count() << ", Parallel" << endl;
 
     return 0;
 }

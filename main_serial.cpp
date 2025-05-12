@@ -245,7 +245,7 @@ void mosp_update(
     int num_vertices, int num_obj,
     const vector<Edge>& orig_edges)
 {
-    cout << "In mosp_update" << endl;
+    // cout << "In mosp_update" << endl;
     for (auto &e : inserted_edges) {
         for (int i = 0; i < num_obj; i++) {
             if (e.weights[i] != INF)
@@ -253,19 +253,19 @@ void mosp_update(
         }
     }
 
-    cout << "Running SOSP updates..." << endl;
+    // cout << "Running SOSP updates..." << endl;
     for (int i = 0; i < num_obj; i++) {
         sosp_update(graph[i], source,
                     parents[i], distances[i],
                     inserted_edges, num_vertices, i);
     }
 
-    cout << "Creating combined graph..." << endl;
+    // cout << "Creating combined graph..." << endl;
     vector<vector<pair<int,double>>> comb(num_vertices);
     vector<vector<CombinedEdge>> combE(num_vertices);
     create_combined_graph(parents, num_vertices, num_obj, orig_edges, inserted_edges, comb, combE);
 
-    cout << "Running SOSP update on combined graph..." << endl;
+    // cout << "Running SOSP update on combined graph..." << endl;
     vector<int> cpar(num_vertices, -1);
     vector<double> cd(num_vertices, INF);
     sosp_update(comb, source, cpar, cd, {}, num_vertices, 0);
@@ -355,15 +355,16 @@ int main(int argc, char* argv[]) {
     int source = stoi(argv[4]);
     int N;
 
+    cout<<num_obj<<","<<num_changes<<",";
+
     vector<Edge> inserted, original;
     vector<vector<vector<pair<int, double>>>> graph;
 
-    cout << "Initializing graph..." << endl;
+    // cout << "Initializing graph..." << endl;
     auto start_graph = high_resolution_clock::now();
     initialize_graph(dataset_path, graph, inserted, N, num_obj, original, num_changes);
     auto end_graph = high_resolution_clock::now();
-    cout << "Graph initialized in " 
-         << duration_cast<milliseconds>(end_graph - start_graph).count() << " ms." << endl;
+    cout << duration_cast<milliseconds>(end_graph - start_graph).count() << ",";
 
     // cout << "Number of vertices: " << N << endl;
     // cout << "Number of edges: " << original.size() + inserted.size() << endl;
@@ -375,22 +376,20 @@ int main(int argc, char* argv[]) {
     vector<vector<int>> parents(num_obj, vector<int>(N));
     vector<vector<double>> distances(num_obj, vector<double>(N));
 
-    cout << "Running Dijkstra's algorithm..." << endl;
+    // cout << "Running Dijkstra's algorithm..." << endl;
     auto start_dijkstra = high_resolution_clock::now();
     for (int i = 0; i < num_obj; i++) {
         dijkstra(graph[i], source, parents[i], distances[i], N);
     }
     auto end_dijkstra = high_resolution_clock::now();
-    cout << "Dijkstra's algorithm completed in " 
-         << duration_cast<milliseconds>(end_dijkstra - start_dijkstra).count() << " ms." << endl;
+    cout << duration_cast<milliseconds>(end_dijkstra - start_dijkstra).count() << ",";
 
 
-    cout << "Running MOSP update..." << endl;
+    // cout << "Running MOSP update..." << endl;
     auto start_mosp = high_resolution_clock::now();
     mosp_update(graph, source, parents, distances, inserted, N, num_obj, original);
     auto end_mosp = high_resolution_clock::now();
-    cout << "MOSP update completed in " 
-         << duration_cast<milliseconds>(end_mosp - start_mosp).count() << " ms." << endl;
+    cout << duration_cast<milliseconds>(end_mosp - start_mosp).count() << ", Serial" << endl;
 
     return 0;
 }
